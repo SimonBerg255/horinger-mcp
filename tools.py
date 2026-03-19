@@ -361,7 +361,7 @@ async def fetch_html_response_text(client: httpx.AsyncClient, url: str) -> tuple
 
     Returns (respondent_name, date, response_text)
     """
-    html = await fetch_html(client, url)
+    html = await fetch_html(client, url, delay=0.3)
     if not html:
         return None, None, None
 
@@ -808,52 +808,59 @@ async def get_all_høringssvar(
         # Limit to max_results
         all_entries = all_entries[:max_results]
 
-        # Step 2: Fetch each response
-        responses = []
+        # Step 2: Fetch each response — concurrently with a semaphore to stay polite
+        # 5 concurrent workers keeps total time ~20s for 50 responses vs 75s+ sequential
+        CONCURRENCY = 5
+        FETCH_DELAY = 0.3  # Per-worker delay; effective site rate = CONCURRENCY × FETCH_DELAY
+        semaphore = asyncio.Semaphore(CONCURRENCY)
+
         breakdown = {"kommune": 0, "fylkeskommune": 0, "stat": 0, "organisasjon": 0, "naringsliv": 0}
+        results_list = [None] * len(all_entries)  # Pre-sized to preserve order
 
-        for i, entry in enumerate(all_entries):
-            if i % 10 == 0:
-                print(f"[get_all_høringssvar] Fetching response {i+1}/{len(all_entries)}: {entry['name'][:50]}")
-
-            response_text = ""
-            date = ""
-            respondent_name = entry["name"]
-
-            if entry["type"] == "html":
-                name, dt, text = await fetch_html_response_text(client, entry["url"])
-                if name:
-                    respondent_name = name
-                if dt:
-                    date = dt
-                if text:
-                    response_text = text
-            elif entry["type"] == "pdf":
-                pdf_bytes = await fetch_binary(client, entry["url"], delay=REQUEST_DELAY)
-                if pdf_bytes:
-                    response_text = extract_pdf_text(pdf_bytes)
+        async def fetch_one(idx: int, entry: dict):
+            async with semaphore:
+                response_text = ""
+                date = ""
                 respondent_name = entry["name"]
 
-            # Use data-instans if available for more accurate classification
-            instans = entry.get("instans", "")
-            resp_type = classify_respondent_from_instans(instans) if instans else classify_respondent(respondent_name)
+                if entry["type"] == "html":
+                    name, dt, text = await fetch_html_response_text(client, entry["url"])
+                    if name:
+                        respondent_name = name
+                    if dt:
+                        date = dt
+                    if text:
+                        response_text = text
+                elif entry["type"] == "pdf":
+                    pdf_bytes = await fetch_binary(client, entry["url"], delay=FETCH_DELAY)
+                    if pdf_bytes:
+                        response_text = extract_pdf_text(pdf_bytes)
 
-            # Apply respondent_type filter
+                instans = entry.get("instans", "")
+                resp_type = classify_respondent_from_instans(instans) if instans else classify_respondent(respondent_name)
+
+                results_list[idx] = {
+                    "respondent": respondent_name,
+                    "respondent_type": resp_type,
+                    "date": date,
+                    "response_text": response_text,
+                    "response_url": entry["url"],
+                    "word_count": len(response_text.split()) if response_text else 0,
+                }
+
+        print(f"[get_all_høringssvar] Fetching {len(all_entries)} responses with {CONCURRENCY} concurrent workers...")
+        await asyncio.gather(*[fetch_one(i, e) for i, e in enumerate(all_entries)])
+
+        # Apply respondent_type filter and build breakdown
+        responses = []
+        for item in results_list:
+            if item is None:
+                continue
+            resp_type = item["respondent_type"]
             if respondent_type != "alle" and resp_type != respondent_type:
                 continue
-
-            word_count = len(response_text.split()) if response_text else 0
-
             breakdown[resp_type] = breakdown.get(resp_type, 0) + 1
-
-            responses.append({
-                "respondent": respondent_name,
-                "respondent_type": resp_type,
-                "date": date,
-                "response_text": response_text,
-                "response_url": entry["url"],
-                "word_count": word_count,
-            })
+            responses.append(item)
 
         print(f"[get_all_høringssvar] Done. Retrieved {len(responses)} responses (type filter: {respondent_type})")
 
