@@ -1,0 +1,9 @@
+fastmcp
+httpx
+beautifulsoup4
+lxml
+pdfplumber
+python-dotenv
+uvicorn
+mcp
+PyJWT
