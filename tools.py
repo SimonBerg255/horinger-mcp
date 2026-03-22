@@ -1,9 +1,12 @@
 """
 Tools for processing Norwegian government consultation responses (høringssvar)
-from regjeringen.no.
+from regjeringen.no, and parliamentary data from Stortinget's open data API.
 
-All tools access regjeringen.no which is fully server-side rendered.
-No authentication required for public consultation data.
+Data sources:
+- regjeringen.no: ministry consultation rounds (høringer) and responses (høringssvar)
+- data.stortinget.no: parliamentary cases (saker), committee hearings, and vote results
+
+No authentication required. Both sources are fully public.
 """
 
 import asyncio
@@ -1006,3 +1009,260 @@ async def get_single_høringssvar(url: str) -> dict:
                 "word_count": len(text.split()) if text else 0,
                 "source_url": url,
             }
+
+
+# ─────────────────────────────────────────────
+# Stortinget open data API tools
+# API base: https://data.stortinget.no/eksport/
+# JSON, no auth required, returns Norwegian parliamentary data
+# ─────────────────────────────────────────────
+
+STORTINGET_API = "https://data.stortinget.no/eksport"
+CURRENT_SESJON = "2024-2025"
+
+
+def _parse_stortinget_date(ms_date: str) -> str:
+    """Convert /Date(1234567890000+0100)/ to YYYY-MM-DD string."""
+    if not ms_date:
+        return ""
+    m = re.search(r'/Date\((-?\d+)', ms_date)
+    if not m:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        ts = int(m.group(1)) / 1000
+        if ts < 0 or ts > 9999999999:
+            return ""
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+async def search_stortinget(
+    query: str,
+    sesjon: str = CURRENT_SESJON,
+    max_results: int = 10,
+) -> dict:
+    """
+    Search Stortinget's parliamentary cases (saker) by keyword.
+
+    Use this to find the parliamentary case corresponding to a ministry
+    consultation — to see what happened after the høring, whether a law
+    was passed, which committee handled it, and whether there were votes.
+
+    This covers the second half of the legislative process: after a ministry
+    consultation closes, the proposal goes to Stortinget as a case (sak).
+
+    Args:
+        query: Keywords to search in Norwegian, e.g. "kommunelov",
+               "markedsføringsloven", "anskaffelser", "Ukraina"
+        sesjon: Parliamentary session, e.g. "2024-2025", "2023-2024".
+               Default is current session.
+        max_results: Max results to return, default 10.
+
+    Returns:
+        dict with "saker" list, each containing:
+        title, korttittel, id (sak_id), sesjon, type, status,
+        committee (komite), url (stortinget.no link)
+    """
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{STORTINGET_API}/saker",
+            params={"sesjonid": sesjon, "format": "json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        saker = r.json().get("saker_liste", [])
+
+    query_words = [w.lower() for w in query.split() if w]
+    matches = []
+    for sak in saker:
+        title = sak.get("tittel", "")
+        kort = sak.get("korttittel", "")
+        combined = (title + " " + kort).lower()
+        if any(w in combined for w in query_words):
+            komite = sak.get("komite", {})
+            matches.append({
+                "id": sak.get("id"),
+                "title": title,
+                "korttittel": kort,
+                "sesjon": sak.get("behandlet_sesjon_id", sesjon),
+                "type": sak.get("type"),
+                "status": sak.get("status"),
+                "committee": komite.get("navn", "") if isinstance(komite, dict) else "",
+                "url": f"https://www.stortinget.no/no/Saker-og-publikasjoner/Saker/Sak/?p={sak.get('id')}",
+            })
+        if len(matches) >= max_results:
+            break
+
+    return {"saker": matches, "total_found": len(matches), "sesjon": sesjon}
+
+
+async def get_stortinget_horinger(
+    sesjon: str = CURRENT_SESJON,
+    komite: Optional[str] = None,
+    sak_id: Optional[int] = None,
+) -> dict:
+    """
+    Get Stortinget committee hearings (høringer) for a session or specific case.
+
+    NOTE: These are parliamentary committee hearings — different from the
+    ministry consultation rounds on regjeringen.no. These happen AFTER the
+    ministry has processed consultation responses and submitted a bill to
+    Stortinget. The committee then holds its own hearings before voting.
+
+    Use sak_id to find hearings linked to a specific parliamentary case
+    (from search_stortinget). Use komite to filter by committee name.
+
+    Args:
+        sesjon: Parliamentary session, e.g. "2024-2025". Default: current.
+        komite: Optional committee filter, e.g. "justis", "helse", "finans"
+        sak_id: Optional — filter hearings linked to a specific sak
+
+    Returns:
+        dict with "horinger" list, each containing:
+        id, status, type (skriftlig/muntlig), committee, start_date,
+        deadline, linked_saker (list of related sak IDs and titles)
+    """
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{STORTINGET_API}/horinger",
+            params={"sesjonid": sesjon, "format": "json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        horings = r.json().get("horinger_liste", [])
+
+    results = []
+    for h in horings:
+        komite_info = h.get("komite", {})
+        komite_navn = komite_info.get("navn", "") if isinstance(komite_info, dict) else ""
+
+        # Filter by komite if specified
+        if komite and komite.lower() not in komite_navn.lower():
+            continue
+
+        # Filter by sak_id if specified
+        linked_saker = h.get("horing_sak_info_liste", [])
+        if sak_id:
+            linked_ids = [s.get("sak_id") for s in linked_saker]
+            if sak_id not in linked_ids:
+                continue
+
+        results.append({
+            "id": h.get("id"),
+            "status": h.get("horing_status"),
+            "type": "skriftlig" if h.get("skriftlig") else "muntlig",
+            "committee": komite_navn,
+            "start_date": _parse_stortinget_date(h.get("start_dato", "")),
+            "deadline": _parse_stortinget_date(h.get("innspillsfrist", "")),
+            "linked_saker": [
+                {"sak_id": s.get("sak_id"), "title": s.get("sak_korttittel")}
+                for s in linked_saker
+            ],
+        })
+
+    return {
+        "horinger": results,
+        "total": len(results),
+        "sesjon": sesjon,
+        "note": "These are Stortinget committee hearings, not ministry consultations.",
+    }
+
+
+async def get_vote_result(
+    sak_id: int,
+    sesjon: str = CURRENT_SESJON,
+) -> dict:
+    """
+    Get the Stortinget vote result for a parliamentary case.
+
+    Returns how each party voted on the case — for, against, or absent.
+    Use this to see whether a law passed and which parties supported or
+    opposed it, completing the picture from ministry consultation to
+    final parliamentary decision.
+
+    To find the sak_id, use search_stortinget first.
+
+    Args:
+        sak_id: Stortinget case ID (from search_stortinget results)
+        sesjon: Parliamentary session, e.g. "2024-2025". Default: current.
+
+    Returns:
+        dict with:
+        - sak_id, title
+        - votes: list of voting events, each with:
+          vote_id, for_count, against_count, absent_count, passed (bool),
+          party_breakdown: {"Arbeiderpartiet": {"for": N, "mot": N, "ikke_tilstede": N}, ...}
+        - overall_result: "passed" or "rejected" (based on first/main vote)
+    """
+    async with httpx.AsyncClient() as client:
+        # Step 1: get voting events for this sak
+        r = await client.get(
+            f"{STORTINGET_API}/voteringer",
+            params={"sakid": sak_id, "format": "json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        votering_liste = r.json().get("sak_votering_liste", [])
+
+        if not votering_liste:
+            return {
+                "sak_id": sak_id,
+                "error": "No vote records found for this case. It may not have been voted on yet.",
+            }
+
+        # Step 2: for each vote event, fetch per-representative results
+        votes = []
+        for v in votering_liste:
+            vote_id = v.get("votering_id")  # field is votering_id, not id
+            if not vote_id:
+                continue
+
+            r2 = await client.get(
+                f"{STORTINGET_API}/voteringsresultat",
+                params={"voteringId": vote_id, "format": "json"},
+                timeout=15,
+            )
+            if r2.status_code != 200:
+                continue
+
+            rep_results = r2.json().get("voteringsresultat_liste", [])
+
+            # Aggregate by party
+            party_votes: dict = {}
+            for rep in rep_results:
+                parti = rep.get("representant", {}).get("parti", {})
+                parti_navn = parti.get("navn", "Ukjent") if isinstance(parti, dict) else "Ukjent"
+                vote_val = rep.get("votering")  # 1=for, 2=mot, 3=ikke_tilstede
+
+                if parti_navn not in party_votes:
+                    party_votes[parti_navn] = {"for": 0, "mot": 0, "ikke_tilstede": 0}
+                if vote_val == 1:
+                    party_votes[parti_navn]["for"] += 1
+                elif vote_val == 2:
+                    party_votes[parti_navn]["mot"] += 1
+                elif vote_val == 3:
+                    party_votes[parti_navn]["ikke_tilstede"] += 1
+
+            total_for = v.get("antall_for", 0)
+            total_mot = v.get("antall_mot", 0)
+            votes.append({
+                "vote_id": vote_id,
+                "topic": v.get("votering_tema", ""),
+                "for_count": total_for,
+                "against_count": total_mot,
+                "absent_count": v.get("antall_ikke_tilstede", 0),
+                "passed": v.get("vedtatt", total_for > total_mot),
+                "party_breakdown": party_votes,
+            })
+
+            await asyncio.sleep(0.3)  # polite delay between vote fetches
+
+    overall = "passed" if (votes and votes[0]["passed"]) else "rejected"
+    return {
+        "sak_id": sak_id,
+        "votes": votes,
+        "overall_result": overall,
+        "total_voting_events": len(votes),
+    }

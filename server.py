@@ -17,6 +17,9 @@ from tools import (
     list_høringssvar,
     get_all_høringssvar,
     get_single_høringssvar,
+    search_stortinget,
+    get_stortinget_horinger,
+    get_vote_result,
 )
 
 ####### SERVER #######
@@ -47,11 +50,25 @@ mcp = FastMCP(
         "   → get_single_horingssvar(url=response_url)\n"
         "   Use when get_all_horingssvar truncated a response you need in full,\n"
         "   or to verify a specific respondent's exact position.\n\n"
+        "6. FIND THE PARLIAMENTARY CASE — what happened after the consultation:\n"
+        "   → search_stortinget(query)\n"
+        "   Searches Stortinget saker (cases) by keyword. Returns sak_id, committee,\n"
+        "   status, and a link to the Stortinget page.\n\n"
+        "7. GET STORTINGET COMMITTEE HEARINGS on a case:\n"
+        "   → get_stortinget_horinger(sesjon, sak_id)\n"
+        "   NOTE: These are parliament committee hearings — different from ministry\n"
+        "   consultation rounds. Use sak_id from search_stortinget.\n\n"
+        "8. GET THE FINAL VOTE RESULT — how did Stortinget vote, broken down by party:\n"
+        "   → get_vote_result(sak_id)\n"
+        "   Returns for/against/absent counts per party. Use to answer: did the law\n"
+        "   pass? Which parties supported it? Which opposed?\n\n"
         "TYPICAL WORKFLOWS:\n"
-        "- Full synthesis: search → get_horing_details → get_all_horingssvar → summarise\n"
+        "- Full synthesis: search_horinger → get_horing_details → get_all_horingssvar → summarise\n"
         "- Large høring (50+ responses): search → list_horingssvar → get_all_horingssvar\n"
         "- Comparative: get_all_horingssvar(type='kommune') + get_all_horingssvar(type='naringsliv')\n"
         "- Question mapping: get_horing_details (get questions) → get_all_horingssvar\n"
+        "- Full legislative lifecycle: search_horinger → get_all_horingssvar → search_stortinget\n"
+        "  → get_vote_result — from consultation responses all the way to the final vote\n"
         "- Deep read: get_single_horingssvar with response_url from list_horingssvar"
     ),
     version="1.0.0",
@@ -67,6 +84,9 @@ mcp.tool(name="get_horing_details", meta={"requires_permission": False})(get_hø
 mcp.tool(name="list_horingssvar", meta={"requires_permission": False})(list_høringssvar)
 mcp.tool(name="get_all_horingssvar", meta={"requires_permission": False})(get_all_høringssvar)
 mcp.tool(name="get_single_horingssvar", meta={"requires_permission": False})(get_single_høringssvar)
+mcp.tool(name="search_stortinget", meta={"requires_permission": False})(search_stortinget)
+mcp.tool(name="get_stortinget_horinger", meta={"requires_permission": False})(get_stortinget_horinger)
+mcp.tool(name="get_vote_result", meta={"requires_permission": False})(get_vote_result)
 
 ####### ROUTES #######
 
