@@ -1020,6 +1020,52 @@ async def get_single_høringssvar(url: str) -> dict:
 STORTINGET_API = "https://data.stortinget.no/eksport"
 CURRENT_SESJON = "2024-2025"
 
+# Registry of ALL Stortinget API endpoints.
+# Adding a new endpoint = adding one dict entry. No code changes needed.
+# "params" = documented parameters, "list_key" = JSON field with result list (None = single object),
+# "desc" = one-line description for the stortinget_lookup docstring.
+STORTINGET_ENDPOINTS = {
+    # Structure & reference
+    "stortingsperioder": {"params": [], "list_key": "stortingsperioder_liste", "desc": "All parliamentary periods (e.g. 2021-2025)"},
+    "sesjoner": {"params": [], "list_key": "sesjoner_liste", "desc": "All sessions from 1986-87"},
+    "emner": {"params": [], "list_key": "emner_liste", "desc": "Topic/subject taxonomy for tagging cases"},
+    "partier": {"params": ["sesjonid"], "list_key": "partier_liste", "desc": "Parties represented in a session"},
+    "allepartier": {"params": [], "list_key": "partier_liste", "desc": "All parties historically represented"},
+    "komiteer": {"params": ["sesjonid"], "list_key": "komiteer_liste", "desc": "Active committees in a session"},
+    "allekomiteer": {"params": [], "list_key": "komiteer_liste", "desc": "All committees historically"},
+    "valgdistrikter": {"params": [], "list_key": "fylker_liste", "desc": "Electoral districts (fylker)"},
+    # People
+    "representanter": {"params": ["stortingsperiodeid"], "list_key": "representanter_liste", "desc": "MPs elected for a parliamentary period"},
+    "dagensrepresentanter": {"params": [], "list_key": "dagensrepresentanter_liste", "desc": "Current sitting MPs with party and committee"},
+    "person": {"params": ["personid"], "list_key": None, "desc": "Detailed info for one person by ID"},
+    "regjering": {"params": [], "list_key": "regjeringsmedlemmer_liste", "desc": "Current government cabinet members"},
+    # Cases & legislation
+    "saker": {"params": ["sesjonid"], "list_key": "saker_liste", "desc": "All parliamentary cases in a session"},
+    "sak": {"params": ["sakid"], "list_key": None, "desc": "Detailed info for one case by sak_id"},
+    # Voting
+    "voteringer": {"params": ["sakid"], "list_key": "sak_votering_liste", "desc": "Voting events for a case (from 2011-2012)"},
+    "voteringsforslag": {"params": ["voteringid"], "list_key": "voteringsforslag_liste", "desc": "Proposals put to a specific vote"},
+    "voteringsvedtak": {"params": ["voteringid"], "list_key": "voteringsvedtak_liste", "desc": "Formal decisions from a specific vote"},
+    "voteringsresultat": {"params": ["voteringid"], "list_key": "voteringsresultat_liste", "desc": "Per-representative result for a vote"},
+    "stortingsvedtak": {"params": ["sesjonid"], "list_key": "stortingsvedtak_liste", "desc": "All formal decisions in a session"},
+    # Questions
+    "sporretimesporsmal": {"params": ["sesjonid"], "list_key": "sporsmal_liste", "desc": "Question Time oral questions"},
+    "interpellasjoner": {"params": ["sesjonid"], "list_key": "sporsmal_liste", "desc": "Interpellations (formal debate questions)"},
+    "skriftligesporsmal": {"params": ["sesjonid"], "list_key": "sporsmal_liste", "desc": "Written questions to ministers"},
+    "enkeltsporsmal": {"params": ["sporsmalid"], "list_key": None, "desc": "Single question with full text and answer"},
+    # Hearings
+    "horinger": {"params": ["sesjonid"], "list_key": "horinger_liste", "desc": "Committee hearings in a session"},
+    "horingsprogram": {"params": ["horingid"], "list_key": None, "desc": "Hearing schedule/program"},
+    "horingsinnspill": {"params": ["horingid"], "list_key": "horingsinnspill_liste", "desc": "Written submissions to a hearing"},
+    # Meetings
+    "moter": {"params": ["sesjonid"], "list_key": "moter_liste", "desc": "Plenary meetings in a session"},
+    "dagsorden": {"params": ["moteid"], "list_key": "dagsordensak_liste", "desc": "Agenda items for a meeting"},
+    "talerliste": {"params": [], "list_key": None, "desc": "Real-time speaker list from current meeting"},
+    # Publications
+    "publikasjoner": {"params": ["publikasjontype", "sesjonid"], "list_key": "publikasjoner_liste", "desc": "Publications by type and session (types: referat, innstilling, lovvedtak, dok8, dok12)"},
+    "publikasjon": {"params": ["publikasjonid"], "list_key": None, "desc": "Single publication by ID"},
+}
+
 
 def _parse_stortinget_date(ms_date: str) -> str:
     """Convert /Date(1234567890000+0100)/ to YYYY-MM-DD string."""
@@ -1036,6 +1082,23 @@ def _parse_stortinget_date(ms_date: str) -> str:
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
     except Exception:
         return ""
+
+
+def _recursive_parse_dates(obj):
+    """Walk a dict/list and convert all /Date()/ strings to YYYY-MM-DD in place."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str) and "/Date(" in v:
+                obj[k] = _parse_stortinget_date(v) or v
+            elif isinstance(v, (dict, list)):
+                _recursive_parse_dates(v)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str) and "/Date(" in item:
+                obj[i] = _parse_stortinget_date(item) or item
+            elif isinstance(item, (dict, list)):
+                _recursive_parse_dates(item)
+    return obj
 
 
 async def search_stortinget(
@@ -1265,4 +1328,360 @@ async def get_vote_result(
         "votes": votes,
         "overall_result": overall,
         "total_voting_events": len(votes),
+    }
+
+
+# ─────────────────────────────────────────────
+# Generic Stortinget API lookup
+# ─────────────────────────────────────────────
+
+def _build_endpoint_table() -> str:
+    """Build a formatted table of all endpoints for the docstring."""
+    lines = []
+    for name, info in STORTINGET_ENDPOINTS.items():
+        params = ", ".join(info["params"]) if info["params"] else "(none)"
+        lines.append(f"  {name:25s} params: {params:35s} — {info['desc']}")
+    return "\n".join(lines)
+
+
+_ENDPOINT_TABLE = _build_endpoint_table()
+
+
+async def stortinget_lookup(
+    endpoint: str,
+    params: Optional[dict] = None,
+    max_results: int = 50,
+) -> dict:
+    f"""
+    Direct access to any Stortinget open data API endpoint.
+
+    Use this for any parliamentary data not covered by the purpose-built tools
+    (search_stortinget, get_vote_result, get_case_details, etc.). Covers all
+    ~30 endpoints: representatives, parties, committees, meetings, agendas,
+    publications, decisions, electoral districts, speaker lists, and more.
+
+    Available endpoints and their parameters:
+
+{_ENDPOINT_TABLE}
+
+    Args:
+        endpoint: Endpoint name from the table above, e.g. "dagensrepresentanter",
+                 "komiteer", "stortingsvedtak", "publikasjoner"
+        params: Dict of query parameters, e.g. {{"sesjonid": "2024-2025"}}.
+               The "format" param is added automatically. See table above for
+               required params per endpoint.
+        max_results: Cap on returned items (default 50, 0=no limit). Prevents
+                    context overflow on large endpoints like saker or spørsmål.
+
+    Returns:
+        dict with "endpoint", "params", "results" (list or single object),
+        "total" (full count before cap), "returned" (count after cap)
+    """
+    if endpoint not in STORTINGET_ENDPOINTS:
+        valid = ", ".join(sorted(STORTINGET_ENDPOINTS.keys()))
+        return {"error": f"Unknown endpoint '{endpoint}'. Valid endpoints: {valid}"}
+
+    ep_info = STORTINGET_ENDPOINTS[endpoint]
+    merged_params = {"format": "json"}
+    if params:
+        merged_params.update(params)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{STORTINGET_API}/{endpoint}",
+                params=merged_params,
+                timeout=20,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            return {"error": f"API request failed: {e}", "endpoint": endpoint}
+
+    # Extract results using the registry's list_key
+    list_key = ep_info["list_key"]
+    if list_key is None:
+        # Single-object endpoint (sak, person, etc.)
+        _recursive_parse_dates(data)
+        # Strip metadata fields
+        for k in ("respons_dato_tid", "versjon"):
+            data.pop(k, None)
+        return {"endpoint": endpoint, "params": params, "results": data, "total": 1, "returned": 1}
+
+    results = data.get(list_key, [])
+    total = len(results)
+
+    if max_results and total > max_results:
+        results = results[:max_results]
+
+    _recursive_parse_dates(results)
+
+    return {
+        "endpoint": endpoint,
+        "params": params,
+        "results": results,
+        "total": total,
+        "returned": len(results),
+    }
+
+
+# ─────────────────────────────────────────────
+# Purpose-built Stortinget tools
+# ─────────────────────────────────────────────
+
+async def get_case_details(sak_id: int) -> dict:
+    """
+    Get comprehensive details about a single Stortinget parliamentary case.
+
+    Returns everything about a case: title, type, status, committee, proposers,
+    related documents, decision text, and whether votes exist. Use this after
+    search_stortinget to get the full picture of a specific case.
+
+    For vote breakdown by party, follow up with get_vote_result(sak_id).
+
+    Args:
+        sak_id: Stortinget case ID (from search_stortinget results)
+
+    Returns:
+        dict with: sak_id, title, korttittel, type, status, committee,
+        proposers, session, decision_text, documents, has_votes, vote_count, url
+    """
+    async with httpx.AsyncClient() as client:
+        # Fetch detailed case info
+        r = await client.get(
+            f"{STORTINGET_API}/sak",
+            params={"sakid": sak_id, "format": "json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        sak = r.json()
+
+        # Extract key fields
+        komite = sak.get("komite", {})
+        komite_navn = komite.get("navn", "") if isinstance(komite, dict) else ""
+
+        # Proposers
+        forslagstillere = []
+        for f in sak.get("forslagstiller_liste", []):
+            name = f"{f.get('fornavn', '')} {f.get('etternavn', '')}".strip()
+            parti = f.get("parti", {})
+            parti_navn = parti.get("navn", "") if isinstance(parti, dict) else ""
+            if name:
+                forslagstillere.append({"name": name, "party": parti_navn})
+
+        # Documents
+        docs = []
+        for pub in sak.get("publikasjon_referanse_liste", []):
+            docs.append({
+                "title": pub.get("tittel", ""),
+                "type": pub.get("type", ""),
+                "url": pub.get("lenke_url", ""),
+            })
+
+        # Check vote count
+        r2 = await client.get(
+            f"{STORTINGET_API}/voteringer",
+            params={"sakid": sak_id, "format": "json"},
+            timeout=15,
+        )
+        vote_list = r2.json().get("sak_votering_liste", []) if r2.status_code == 200 else []
+
+        return {
+            "sak_id": sak_id,
+            "title": sak.get("tittel", ""),
+            "korttittel": sak.get("korttittel", ""),
+            "type": sak.get("type", ""),
+            "status": sak.get("status", ""),
+            "committee": komite_navn,
+            "session": sak.get("behandlet_sesjon_id", ""),
+            "decision_text": sak.get("kortvedtak", "") or sak.get("vedtakstekst", ""),
+            "proposers": forslagstillere,
+            "documents": docs,
+            "has_votes": len(vote_list) > 0,
+            "vote_count": len(vote_list),
+            "url": f"https://www.stortinget.no/no/Saker-og-publikasjoner/Saker/Sak/?p={sak_id}",
+        }
+
+
+async def get_hearing_submissions(
+    hearing_id: int,
+    max_results: int = 50,
+) -> dict:
+    """
+    Get all written submissions to a Stortinget committee hearing.
+
+    This is the parliamentary equivalent of get_all_horingssvar — it retrieves
+    what organisations and individuals submitted to a Stortinget committee
+    hearing (not a ministry consultation). Use hearing IDs from
+    get_stortinget_horinger.
+
+    Args:
+        hearing_id: Stortinget hearing ID (from get_stortinget_horinger results)
+        max_results: Max submissions to return, default 50. Set to 0 for all.
+
+    Returns:
+        dict with "submissions" list (organization, date, text, id),
+        "total", "hearing_id"
+    """
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{STORTINGET_API}/horingsinnspill",
+            params={"horingid": hearing_id, "format": "json"},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return {"error": f"Could not fetch submissions for hearing {hearing_id}: HTTP {r.status_code}", "hearing_id": hearing_id}
+
+        data = r.json()
+        raw_list = data.get("horingsinnspill_liste", [])
+
+        submissions = []
+        for item in raw_list:
+            submissions.append({
+                "id": item.get("id"),
+                "organization": item.get("organisasjon", ""),
+                "title": item.get("tittel", ""),
+                "date": _parse_stortinget_date(item.get("dato", "")),
+                "text": item.get("tekst", ""),
+            })
+
+        total = len(submissions)
+        if max_results and total > max_results:
+            submissions = submissions[:max_results]
+
+        # Also try to get program for context
+        program = []
+        try:
+            r2 = await client.get(
+                f"{STORTINGET_API}/horingsprogram",
+                params={"horingid": hearing_id, "format": "json"},
+                timeout=10,
+            )
+            if r2.status_code == 200:
+                prog_data = r2.json()
+                _recursive_parse_dates(prog_data)
+                program_items = prog_data.get("horingsdag_liste", [])
+                for day in program_items:
+                    for innslag in day.get("horing_program_innslag_liste", []):
+                        program.append({
+                            "time": innslag.get("tidspunkt", ""),
+                            "organization": innslag.get("organisasjon", ""),
+                            "topic": innslag.get("tema", ""),
+                        })
+        except Exception:
+            pass
+
+        return {
+            "hearing_id": hearing_id,
+            "submissions": submissions,
+            "total": total,
+            "returned": len(submissions),
+            "program": program if program else None,
+        }
+
+
+async def get_parliamentary_questions(
+    sesjon: str = CURRENT_SESJON,
+    question_type: str = "alle",
+    topic: Optional[str] = None,
+    asked_by: Optional[str] = None,
+    answered_by: Optional[str] = None,
+    max_results: int = 20,
+) -> dict:
+    """
+    Search parliamentary questions across all types: oral Question Time,
+    written questions to ministers, and interpellations.
+
+    Use to find what MPs have asked ministers about specific topics, or to
+    track ministerial accountability on a subject.
+
+    Args:
+        sesjon: Parliamentary session, e.g. "2024-2025". Default: current.
+        question_type: "muntlig" (oral question time), "skriftlig" (written),
+                      "interpellasjon" (formal debate), "alle" (all types, default)
+        topic: Keywords to search in question titles, e.g. "Ukraina", "klima"
+        asked_by: Filter by MP name (substring match), e.g. "Listhaug"
+        answered_by: Filter by minister name (substring), e.g. "Brenna"
+        max_results: Max results, default 20.
+
+    Returns:
+        dict with "questions" list (id, type, title, asked_by, answered_by,
+        date_asked, date_answered, status), "total_found", "session"
+    """
+    type_map = {
+        "muntlig": ["sporretimesporsmal"],
+        "skriftlig": ["skriftligesporsmal"],
+        "interpellasjon": ["interpellasjoner"],
+        "alle": ["sporretimesporsmal", "interpellasjoner", "skriftligesporsmal"],
+    }
+    endpoints = type_map.get(question_type, type_map["alle"])
+
+    all_questions = []
+    async with httpx.AsyncClient() as client:
+        for ep in endpoints:
+            try:
+                r = await client.get(
+                    f"{STORTINGET_API}/{ep}",
+                    params={"sesjonid": sesjon, "format": "json"},
+                    timeout=15,
+                )
+                if r.status_code != 200:
+                    continue
+                items = r.json().get("sporsmal_liste", [])
+
+                q_type = {"sporretimesporsmal": "muntlig", "skriftligesporsmal": "skriftlig", "interpellasjoner": "interpellasjon"}.get(ep, ep)
+
+                for q in items:
+                    title = q.get("tittel", "")
+
+                    # Topic filter
+                    if topic:
+                        words = [w.lower() for w in topic.split()]
+                        if not any(w in title.lower() for w in words):
+                            continue
+
+                    # Extract who asked/answered
+                    fra = q.get("sporsmal_fra", {})
+                    fra_name = f"{fra.get('fornavn', '')} {fra.get('etternavn', '')}".strip() if isinstance(fra, dict) else ""
+                    fra_party = fra.get("parti", {}).get("navn", "") if isinstance(fra, dict) and isinstance(fra.get("parti"), dict) else ""
+
+                    til = q.get("sporsmal_til", {})
+                    til_name = f"{til.get('fornavn', '')} {til.get('etternavn', '')}".strip() if isinstance(til, dict) else ""
+                    til_dept = til.get("departement", "") if isinstance(til, dict) else ""
+
+                    besvart = q.get("besvart_av", {})
+                    besvart_name = f"{besvart.get('fornavn', '')} {besvart.get('etternavn', '')}".strip() if isinstance(besvart, dict) else ""
+
+                    # Name filters
+                    if asked_by and asked_by.lower() not in fra_name.lower():
+                        continue
+                    if answered_by:
+                        answerer = besvart_name or til_name
+                        if answered_by.lower() not in answerer.lower():
+                            continue
+
+                    all_questions.append({
+                        "id": q.get("id", ""),
+                        "type": q_type,
+                        "title": title,
+                        "asked_by": {"name": fra_name, "party": fra_party},
+                        "answered_by": {"name": besvart_name or til_name, "department": til_dept},
+                        "date_asked": _parse_stortinget_date(q.get("datert_dato", "")),
+                        "date_answered": _parse_stortinget_date(q.get("besvart_dato", "")),
+                        "status": q.get("status", ""),
+                    })
+            except Exception as e:
+                print(f"[get_parliamentary_questions] Error fetching {ep}: {e}")
+
+    # Sort by date descending
+    all_questions.sort(key=lambda x: x.get("date_asked", ""), reverse=True)
+    total = len(all_questions)
+    if max_results and total > max_results:
+        all_questions = all_questions[:max_results]
+
+    return {
+        "questions": all_questions,
+        "total_found": total,
+        "returned": len(all_questions),
+        "session": sesjon,
     }
