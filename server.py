@@ -6,36 +6,57 @@ Run with: uvicorn server:app --host 0.0.0.0 --port $PORT
 """
 
 from fastmcp import FastMCP
+from mcp.server.fastmcp import Icon
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
+from _icon import FAVICON_B64
 from tools import (
     search_høringer,
     get_høring_details,
+    list_høringssvar,
     get_all_høringssvar,
     get_single_høringssvar,
 )
 
 ####### SERVER #######
 
+icon = Icon(src=FAVICON_B64)
+
 mcp = FastMCP(
     name="Norwegian Consultation Processing (Høringer)",
     instructions=(
         "Use this server to process Norwegian government consultation rounds (høringer) from regjeringen.no.\n\n"
-        "Primary use case: a ministry has received hundreds of høringssvar and needs to analyse, "
-        "compare, and synthesise them.\n\n"
-        "Tool usage:\n"
-        "- search_horinger: find a høring by topic or ministry\n"
-        "- get_horing_details: read the proposal document and extract the specific questions "
-        "that were posed to respondents\n"
-        "- get_all_horingssvar: retrieve the full set of published responses — use this as the "
-        "main data source for analysis. Set max_results high (200+) when doing comprehensive analysis\n"
-        "- get_single_horingssvar: read one specific response in depth\n\n"
-        "Typical workflow: search → get details → get all responses → synthesise.\n"
-        "For comparative analysis: get all responses twice with different respondent_type filters."
+        "DECISION TREE — pick the right tool based on what is needed:\n\n"
+        "1. FIND A HØRING by topic or ministry:\n"
+        "   → search_horinger\n"
+        "   Example: 'finn høringen om kommunelov' → search_horinger(query='kommunelov')\n\n"
+        "2. READ THE PROPOSAL — what was the ministry proposing, what questions did they ask:\n"
+        "   → get_horing_details\n"
+        "   Returns full høringsnotat text and a list of specific questions asked.\n\n"
+        "3. SEE WHO RESPONDED — fast overview of all respondents without reading content:\n"
+        "   → list_horingssvar\n"
+        "   Use this first on large høringer (50+ responses) to see the full list of\n"
+        "   respondents, their types, and how many there are before fetching full texts.\n\n"
+        "4. READ ALL RESPONSE TEXTS — for synthesis, comparison, or question mapping:\n"
+        "   → get_all_horingssvar\n"
+        "   Set max_chars_per_response=0 for full untruncated text.\n"
+        "   Use respondent_type filter ('kommune', 'stat', 'organisasjon', 'naringsliv')\n"
+        "   for comparative analysis between groups.\n\n"
+        "5. READ ONE SPECIFIC RESPONSE IN FULL:\n"
+        "   → get_single_horingssvar(url=response_url)\n"
+        "   Use when get_all_horingssvar truncated a response you need in full,\n"
+        "   or to verify a specific respondent's exact position.\n\n"
+        "TYPICAL WORKFLOWS:\n"
+        "- Full synthesis: search → get_horing_details → get_all_horingssvar → summarise\n"
+        "- Large høring (50+ responses): search → list_horingssvar → get_all_horingssvar\n"
+        "- Comparative: get_all_horingssvar(type='kommune') + get_all_horingssvar(type='naringsliv')\n"
+        "- Question mapping: get_horing_details (get questions) → get_all_horingssvar\n"
+        "- Deep read: get_single_horingssvar with response_url from list_horingssvar"
     ),
     version="1.0.0",
     website_url="https://www.regjeringen.no/no/dokument/hoyringar/id1763/",
+    icons=[icon],
 )
 
 ####### TOOLS #######
@@ -43,6 +64,7 @@ mcp = FastMCP(
 
 mcp.tool(name="search_horinger", meta={"requires_permission": False})(search_høringer)
 mcp.tool(name="get_horing_details", meta={"requires_permission": False})(get_høring_details)
+mcp.tool(name="list_horingssvar", meta={"requires_permission": False})(list_høringssvar)
 mcp.tool(name="get_all_horingssvar", meta={"requires_permission": False})(get_all_høringssvar)
 mcp.tool(name="get_single_horingssvar", meta={"requires_permission": False})(get_single_høringssvar)
 

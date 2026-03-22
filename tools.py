@@ -725,37 +725,115 @@ async def get_høring_details(url: str) -> dict:
         }
 
 
+async def list_høringssvar(
+    url: str,
+    respondent_type: str = "alle",
+) -> dict:
+    """
+    List all published responses to a høring — fast, metadata only.
+
+    Use this FIRST to see who has responded before deciding whether to read
+    the full texts. Returns respondent names, types, and URLs without
+    downloading any response bodies. Typically completes in 2-5 seconds
+    regardless of how many responses exist.
+
+    After listing, use get_all_horingssvar to fetch full texts, or
+    get_single_horingssvar to read one specific response.
+
+    Args:
+        url: URL to the høring page
+        respondent_type: Filter by type — "kommune", "fylkeskommune", "stat",
+                        "organisasjon", "naringsliv", "alle" (default)
+
+    Returns:
+        dict with:
+        - "responses": list of metadata objects, each with:
+          respondent (str), respondent_type (str), response_url (str),
+          format ("html" or "pdf")
+        - "total_listed": number of responses returned
+        - "total_available": total published responses on regjeringen.no
+        - "respondent_type_breakdown": {"kommune": N, "stat": N, ...}
+    """
+    base_url = get_høring_base_url(url)
+    all_entries = []
+    total_available = 0
+
+    async with httpx.AsyncClient() as client:
+        page1_url = f"{base_url}?showSvar=true&consterm=&page=1&isFilterOpen=true"
+        page1_html = await fetch_html(client, page1_url, delay=REQUEST_DELAY)
+        if not page1_html:
+            return {"responses": [], "total_listed": 0, "total_available": 0, "respondent_type_breakdown": {}}
+
+        pag = parse_pagination(page1_html)
+        total_available = pag["total"]
+        total_pages = pag["total_pages"]
+
+        all_entries.extend(parse_høringssvar_entries(page1_html, base_url))
+
+        for page_num in range(2, total_pages + 1):
+            page_url = f"{base_url}?showSvar=true&consterm=&page={page_num}&isFilterOpen=true"
+            page_html = await fetch_html(client, page_url, delay=REQUEST_DELAY)
+            if not page_html:
+                break
+            all_entries.extend(parse_høringssvar_entries(page_html, base_url))
+
+    breakdown = {"kommune": 0, "fylkeskommune": 0, "stat": 0, "organisasjon": 0, "naringsliv": 0}
+    responses = []
+    for entry in all_entries:
+        instans = entry.get("instans", "")
+        resp_type = classify_respondent_from_instans(instans) if instans else classify_respondent(entry["name"])
+        if respondent_type != "alle" and resp_type != respondent_type:
+            continue
+        breakdown[resp_type] = breakdown.get(resp_type, 0) + 1
+        responses.append({
+            "respondent": entry["name"],
+            "respondent_type": resp_type,
+            "response_url": entry["url"],
+            "format": entry["type"],
+        })
+
+    return {
+        "responses": responses,
+        "total_listed": len(responses),
+        "total_available": total_available,
+        "respondent_type_breakdown": breakdown,
+    }
+
+
 async def get_all_høringssvar(
     url: str,
     respondent_type: str = "alle",
     max_results: int = 200,
+    max_chars_per_response: int = 5000,
 ) -> dict:
     """
-    Retrieve all published responses to a høring.
+    Retrieve full text of all published responses to a høring.
 
-    This is the core analysis tool. Use it to get the full set of published
-    responses to a consultation round. Set max_results high (200+) for
-    comprehensive analysis. Handles pagination automatically.
+    Use this for synthesis and analysis — it downloads and returns the full
+    text of each response. For large høringer (100+ responses), first use
+    list_horingssvar to see who responded, then call this tool.
+
+    Fetches responses concurrently (5 at a time) to stay within MCP timeouts.
 
     For comparative analysis by respondent type, call this twice with different
     respondent_type values: once for "kommune" and once for "naringsliv".
 
     Args:
-        url: URL to the høring page (same URL used in get_høring_details)
+        url: URL to the høring page (same URL used in get_horing_details)
         respondent_type: Filter by type — "kommune" (municipalities),
                         "fylkeskommune" (county authorities), "stat"
                         (state agencies/directorates), "organisasjon"
                         (NGOs/organisations), "naringsliv" (businesses),
                         "alle" (all, default)
-        max_results: Maximum responses to retrieve, default 200. Set to 500+
-                    for very large høringer. Each response requires an HTTP
-                    request so large values take time.
+        max_results: Maximum responses to retrieve, default 200.
+        max_chars_per_response: Cap text per response to avoid context overflow.
+                               Default 5000 chars. Set to 0 for no limit (full text).
 
     Returns:
         dict with:
         - "responses": list of response objects, each with:
           respondent (str), respondent_type (str), date (str),
-          response_text (str, full text), response_url (str), word_count (int)
+          response_text (str), response_url (str), word_count (int)
         - "total_retrieved": number of responses in the returned list
         - "total_available": total published responses on regjeringen.no
         - "respondent_type_breakdown": {"kommune": N, "stat": N, ...}
@@ -838,6 +916,10 @@ async def get_all_høringssvar(
 
                 instans = entry.get("instans", "")
                 resp_type = classify_respondent_from_instans(instans) if instans else classify_respondent(respondent_name)
+
+                # Apply per-response text cap (0 = no limit)
+                if max_chars_per_response and len(response_text) > max_chars_per_response:
+                    response_text = response_text[:max_chars_per_response] + "... [truncated]"
 
                 results_list[idx] = {
                     "respondent": respondent_name,
