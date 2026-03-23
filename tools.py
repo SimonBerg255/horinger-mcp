@@ -1876,6 +1876,121 @@ async def find_stortinget_hearings(
         "total": len(results),
         "note": (
             "These are Stortinget committee hearings. "
-            "For ministry consultation responses, use search_horinger + get_all_horingssvar."
+            "For ministry consultation responses, use find_horinger_og_svar instead."
         ),
     }
+
+
+async def find_horinger_og_svar(
+    topic: str,
+    include_responses: bool = True,
+    max_responses: int = 20,
+    max_chars_per_response: int = 3000,
+    respondent_type: str = "alle",
+) -> dict:
+    """
+    Find ministry consultations (høringer) by topic and retrieve responses in one call.
+    No URLs or IDs needed — just describe what you're looking for.
+
+    This is the recommended starting point for any regjeringen.no consultation query.
+    It combines search + response fetching that would otherwise require knowing URLs
+    and making multiple separate calls.
+
+    NOTE: These are ministry consultation rounds (government proposes regulations and
+    asks the public to comment). They are NOT the same as Stortinget committee hearings.
+    For parliamentary committee hearings, use find_stortinget_hearings instead.
+
+    Args:
+        topic: Natural language topic in Norwegian or English, e.g. "klima",
+               "pensjon", "helse", "kommunelov", "immigrasjon", "skatt".
+               Matched against høring titles.
+        include_responses: Also fetch response texts for the best match. Default True.
+        max_responses: Max responses to fetch if include_responses=True. Default 20.
+        max_chars_per_response: Character cap per response text. Default 3000.
+                                Set to 0 for full text (warning: large).
+        respondent_type: Filter responses by type — "kommune", "fylkeskommune",
+                         "stat", "organisasjon", "naringsliv", "alle" (default).
+
+    Returns:
+        dict with:
+        - matches: list of all matching høringer with title, url, ministry, deadline, status
+        - total_matches: number of matches found
+        - If include_responses=True:
+          - best_match: the first/most relevant match with full response data
+          - best_match.responses: list of response objects with respondent, text, type
+          - best_match.total_available: total published responses on regjeringen.no
+          - best_match.respondent_type_breakdown: counts by respondent category
+        - note: guidance if multiple matches found
+    """
+    # Step 1: Search for matching høringer
+    search_result = await search_høringer(query=topic, status="all", max_results=10)
+    matches = search_result.get("results", [])
+
+    if not matches:
+        return {
+            "topic": topic,
+            "matches": [],
+            "total_matches": 0,
+            "message": (
+                f"No høringer found for '{topic}'. "
+                "Try a broader keyword or Norwegian equivalent "
+                "(e.g. 'klima' instead of 'climate', 'helse' instead of 'health')."
+            ),
+        }
+
+    result: dict = {
+        "topic": topic,
+        "matches": [
+            {
+                "title": m["title"],
+                "url": m["url"],
+                "ministry": m.get("ministry", ""),
+                "deadline": m.get("deadline"),
+                "status": m.get("status"),
+            }
+            for m in matches
+        ],
+        "total_matches": len(matches),
+    }
+
+    if not include_responses:
+        if len(matches) > 1:
+            result["note"] = (
+                f"Found {len(matches)} matches. Call again with the specific title "
+                "or use get_all_horingssvar with the URL of the desired match."
+            )
+        return result
+
+    # Step 2: Fetch responses for the best (first) match
+    best = matches[0]
+    responses_result = await get_all_høringssvar(
+        url=best["url"],
+        respondent_type=respondent_type,
+        max_results=max_responses,
+        max_chars_per_response=max_chars_per_response,
+    )
+
+    result["best_match"] = {
+        "title": best["title"],
+        "url": best["url"],
+        "ministry": best.get("ministry", ""),
+        "deadline": best.get("deadline"),
+        "status": best.get("status"),
+        "responses": responses_result.get("responses", []),
+        "total_retrieved": responses_result.get("total_retrieved", 0),
+        "total_available": responses_result.get("total_available", 0),
+        "respondent_type_breakdown": responses_result.get("respondent_type_breakdown", {}),
+    }
+
+    if responses_result.get("error"):
+        result["best_match"]["error"] = responses_result["error"]
+
+    if len(matches) > 1:
+        result["note"] = (
+            f"Responses shown for best match: '{best['title']}'. "
+            f"{len(matches) - 1} other match(es) found — see 'matches' list. "
+            "To get responses for a different match, call get_all_horingssvar "
+            "with its URL, or call find_horinger_og_svar with a more specific topic."
+        )
+
+    return result

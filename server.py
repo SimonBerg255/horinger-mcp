@@ -21,6 +21,7 @@ from tools import (
     list_høringssvar,
     get_all_høringssvar,
     get_single_høringssvar,
+    find_horinger_og_svar,
     # Stortinget parliamentary tools
     search_stortinget,
     get_stortinget_horinger,
@@ -43,44 +44,48 @@ mcp = FastMCP(
         "and parliamentary proceedings (Stortinget open data API).\n\n"
         "DECISION TREE:\n\n"
         "--- MINISTRY CONSULTATIONS (regjeringen.no) ---\n\n"
-        "1. FIND A HORING by topic or ministry:\n"
-        "   → search_horinger\n\n"
-        "2. READ THE PROPOSAL — what the ministry proposed and what questions they asked:\n"
-        "   → get_horing_details\n\n"
-        "3. SEE WHO RESPONDED — fast metadata listing, no text fetching:\n"
-        "   → list_horingssvar\n\n"
-        "4. READ ALL RESPONSE TEXTS — for synthesis, comparison, question mapping:\n"
-        "   → get_all_horingssvar\n"
+        "1. FIND HØRINGER AND READ RESPONSES IN ONE STEP (recommended):\n"
+        "   → find_horinger_og_svar(topic='...') — natural language, no URLs needed.\n"
+        "   Returns matching høringer + response texts for the best match.\n\n"
+        "2. FIND HØRINGER ONLY (no responses yet):\n"
+        "   → search_horinger — returns a list of matching høringer with URLs.\n\n"
+        "3. READ THE PROPOSAL — what the ministry proposed and what questions they asked:\n"
+        "   → get_horing_details(url)\n\n"
+        "4. SEE WHO RESPONDED — fast metadata listing, no text fetching:\n"
+        "   → list_horingssvar(url)\n\n"
+        "5. READ ALL RESPONSE TEXTS for a known høring URL:\n"
+        "   → get_all_horingssvar(url)\n"
         "   Use respondent_type for comparative analysis. max_chars_per_response=0 for full text.\n\n"
-        "5. READ ONE SPECIFIC RESPONSE IN FULL:\n"
-        "   → get_single_horingssvar\n\n"
+        "6. READ ONE SPECIFIC RESPONSE IN FULL:\n"
+        "   → get_single_horingssvar(url)\n\n"
         "--- STORTINGET PARLIAMENTARY DATA ---\n\n"
-        "6. FIND A PARLIAMENTARY CASE by keyword:\n"
+        "7. FIND A PARLIAMENTARY CASE by keyword:\n"
         "   → search_stortinget\n\n"
-        "7. GET FULL CASE DETAILS — metadata, committee, documents, decision text:\n"
+        "8. GET FULL CASE DETAILS — metadata, committee, documents, decision text:\n"
         "   → get_case_details(sak_id)\n\n"
-        "8. FIND COMMITTEE HEARINGS BY TOPIC and read submissions in one step:\n"
+        "9. FIND COMMITTEE HEARINGS BY TOPIC and read submissions in one step:\n"
         "   → find_stortinget_hearings(topic, sesjon)\n"
         "   This is the recommended entry point — no hearing IDs needed.\n\n"
-        "9. BROWSE COMMITTEE HEARINGS for a session or specific case:\n"
-        "   → get_stortinget_horinger(sesjon, sak_id)\n\n"
-        "10. READ HEARING SUBMISSIONS by known hearing ID:\n"
+        "10. BROWSE COMMITTEE HEARINGS for a session or specific case:\n"
+        "    → get_stortinget_horinger(sesjon, sak_id)\n\n"
+        "11. READ HEARING SUBMISSIONS by known hearing ID:\n"
         "    → get_hearing_submissions(hearing_id)\n"
         "    WARNING: hearing_id must be a Stortinget ID (small 4-6 digit number),\n"
         "    NOT a regjeringen.no URL/ID. Use find_stortinget_hearings instead\n"
         "    if you don't already have a Stortinget hearing ID.\n\n"
-        "11. GET VOTE RESULT — party-by-party breakdown:\n"
+        "12. GET VOTE RESULT — party-by-party breakdown:\n"
         "    → get_vote_result(sak_id)\n\n"
-        "12. SEARCH PARLIAMENTARY QUESTIONS — oral, written, interpellations:\n"
+        "13. SEARCH PARLIAMENTARY QUESTIONS — oral, written, interpellations:\n"
         "    → get_parliamentary_questions(sesjon, question_type, topic)\n\n"
-        "13. EXPLORE ANY STORTINGET DATA — direct API access to all ~30 endpoints:\n"
+        "14. EXPLORE ANY STORTINGET DATA — direct API access to all ~30 endpoints:\n"
         "    → stortinget_lookup(endpoint, params)\n"
         "    Covers: representatives, parties, committees, meetings, agendas, publications,\n"
         "    decisions, electoral districts, speaker lists, government cabinet, and more.\n"
         "    See tool docstring for the full endpoint table.\n\n"
         "TYPICAL WORKFLOWS:\n"
-        "- Ministry consultation synthesis: search_horinger → get_horing_details → get_all_horingssvar\n"
-        "- Full legislative lifecycle: search_horinger → get_all_horingssvar → search_stortinget\n"
+        "- Ministry consultation synthesis (easiest): find_horinger_og_svar(topic='...')\n"
+        "- Ministry consultation with proposal context: search_horinger → get_horing_details → get_all_horingssvar\n"
+        "- Full legislative lifecycle: find_horinger_og_svar → search_stortinget\n"
         "  → get_case_details → get_vote_result\n"
         "- Committee hearing by topic: find_stortinget_hearings(topic='...') [single call, no IDs]\n"
         "- Committee hearing by case: search_stortinget → get_stortinget_horinger(sak_id=...) → get_hearing_submissions\n"
@@ -100,6 +105,7 @@ mcp = FastMCP(
 # MCP spec requires ASCII tool names — register with explicit names
 
 # Regjeringen.no consultation tools
+mcp.tool(name="find_horinger_og_svar", meta={"requires_permission": False})(find_horinger_og_svar)
 mcp.tool(name="search_horinger", meta={"requires_permission": False})(search_høringer)
 mcp.tool(name="get_horing_details", meta={"requires_permission": False})(get_høring_details)
 mcp.tool(name="list_horingssvar", meta={"requires_permission": False})(list_høringssvar)
