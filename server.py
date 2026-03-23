@@ -29,6 +29,7 @@ from tools import (
     get_case_details,
     get_hearing_submissions,
     get_parliamentary_questions,
+    find_stortinget_hearings,
 )
 
 ####### SERVER #######
@@ -58,26 +59,37 @@ mcp = FastMCP(
         "   → search_stortinget\n\n"
         "7. GET FULL CASE DETAILS — metadata, committee, documents, decision text:\n"
         "   → get_case_details(sak_id)\n\n"
-        "8. GET COMMITTEE HEARINGS on a case or in a session:\n"
+        "8. FIND COMMITTEE HEARINGS BY TOPIC and read submissions in one step:\n"
+        "   → find_stortinget_hearings(topic, sesjon)\n"
+        "   This is the recommended entry point — no hearing IDs needed.\n\n"
+        "9. BROWSE COMMITTEE HEARINGS for a session or specific case:\n"
         "   → get_stortinget_horinger(sesjon, sak_id)\n\n"
-        "9. READ HEARING SUBMISSIONS — what was submitted to a committee hearing:\n"
-        "   → get_hearing_submissions(hearing_id)\n\n"
-        "10. GET VOTE RESULT — party-by-party breakdown:\n"
+        "10. READ HEARING SUBMISSIONS by known hearing ID:\n"
+        "    → get_hearing_submissions(hearing_id)\n"
+        "    WARNING: hearing_id must be a Stortinget ID (small 4-6 digit number),\n"
+        "    NOT a regjeringen.no URL/ID. Use find_stortinget_hearings instead\n"
+        "    if you don't already have a Stortinget hearing ID.\n\n"
+        "11. GET VOTE RESULT — party-by-party breakdown:\n"
         "    → get_vote_result(sak_id)\n\n"
-        "11. SEARCH PARLIAMENTARY QUESTIONS — oral, written, interpellations:\n"
+        "12. SEARCH PARLIAMENTARY QUESTIONS — oral, written, interpellations:\n"
         "    → get_parliamentary_questions(sesjon, question_type, topic)\n\n"
-        "12. EXPLORE ANY STORTINGET DATA — direct API access to all ~30 endpoints:\n"
+        "13. EXPLORE ANY STORTINGET DATA — direct API access to all ~30 endpoints:\n"
         "    → stortinget_lookup(endpoint, params)\n"
         "    Covers: representatives, parties, committees, meetings, agendas, publications,\n"
         "    decisions, electoral districts, speaker lists, government cabinet, and more.\n"
         "    See tool docstring for the full endpoint table.\n\n"
         "TYPICAL WORKFLOWS:\n"
-        "- Full synthesis: search_horinger → get_horing_details → get_all_horingssvar → summarise\n"
+        "- Ministry consultation synthesis: search_horinger → get_horing_details → get_all_horingssvar\n"
         "- Full legislative lifecycle: search_horinger → get_all_horingssvar → search_stortinget\n"
         "  → get_case_details → get_vote_result\n"
-        "- Committee hearing deep dive: get_stortinget_horinger → get_hearing_submissions\n"
+        "- Committee hearing by topic: find_stortinget_hearings(topic='...') [single call, no IDs]\n"
+        "- Committee hearing by case: search_stortinget → get_stortinget_horinger(sak_id=...) → get_hearing_submissions\n"
         "- Question accountability: get_parliamentary_questions(topic='...', answered_by='...')\n"
-        "- Reference data: stortinget_lookup('dagensrepresentanter') for current MPs"
+        "- Reference data: stortinget_lookup('dagensrepresentanter') for current MPs\n\n"
+        "KEY DISTINCTION:\n"
+        "- regjeringen.no høringer = ministry consultation rounds (propose regulations, ask public)\n"
+        "- Stortinget høringer = parliamentary committee hearings (after bill submitted to parliament)\n"
+        "These are separate systems with different IDs. Never mix their IDs across tools."
     ),
     version="2.0.0",
     website_url="https://www.regjeringen.no/no/dokument/hoyringar/id1763/",
@@ -99,6 +111,7 @@ mcp.tool(name="search_stortinget", meta={"requires_permission": False})(search_s
 mcp.tool(name="get_stortinget_horinger", meta={"requires_permission": False})(get_stortinget_horinger)
 mcp.tool(name="get_vote_result", meta={"requires_permission": False})(get_vote_result)
 mcp.tool(name="get_case_details", meta={"requires_permission": False})(get_case_details)
+mcp.tool(name="find_stortinget_hearings", meta={"requires_permission": False})(find_stortinget_hearings)
 mcp.tool(name="get_hearing_submissions", meta={"requires_permission": False})(get_hearing_submissions)
 mcp.tool(name="get_parliamentary_questions", meta={"requires_permission": False})(get_parliamentary_questions)
 mcp.tool(name="stortinget_lookup", meta={"requires_permission": False})(stortinget_lookup)

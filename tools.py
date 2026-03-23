@@ -1381,6 +1381,22 @@ async def stortinget_lookup(
         valid = ", ".join(sorted(STORTINGET_ENDPOINTS.keys()))
         return {"error": f"Unknown endpoint '{endpoint}'. Valid endpoints: {valid}"}
 
+    # Detect regjeringen.no IDs passed to horingsinnspill by mistake
+    if endpoint == "horingsinnspill" and params:
+        hid = params.get("horingid", 0)
+        if isinstance(hid, int) and hid > 999999:
+            return {
+                "error": (
+                    f"horingid {hid} looks like a regjeringen.no consultation ID, "
+                    "not a Stortinget hearing ID. Stortinget hearing IDs are small numbers (4-6 digits)."
+                ),
+                "how_to_fix": (
+                    "Use find_stortinget_hearings(topic='your topic') to search by topic "
+                    "and get submissions in one call — no ID knowledge needed. "
+                    "Or use get_stortinget_horinger() to browse hearings and find valid IDs."
+                ),
+            }
+
     ep_info = STORTINGET_ENDPOINTS[endpoint]
     merged_params = {"format": "json"}
     if params:
@@ -1513,16 +1529,40 @@ async def get_hearing_submissions(
     This is the parliamentary equivalent of get_all_horingssvar — it retrieves
     what organisations and individuals submitted to a Stortinget committee
     hearing (not a ministry consultation). Use hearing IDs from
-    get_stortinget_horinger.
+    get_stortinget_horinger or find_stortinget_hearings.
+
+    IMPORTANT: hearing_id must be a Stortinget hearing ID (typically a small
+    4-6 digit number), NOT a regjeringen.no consultation ID (which are large
+    7-8 digit numbers like 10005622). To find valid hearing IDs, use
+    find_stortinget_hearings(topic='...') — it searches and fetches submissions
+    in a single call with no ID knowledge required.
 
     Args:
-        hearing_id: Stortinget hearing ID (from get_stortinget_horinger results)
+        hearing_id: Stortinget hearing ID (from get_stortinget_horinger or
+                   find_stortinget_hearings results)
         max_results: Max submissions to return, default 50. Set to 0 for all.
 
     Returns:
         dict with "submissions" list (organization, date, text, id),
         "total", "hearing_id"
     """
+    # Detect if a regjeringen.no ID was passed by mistake (they're typically > 1M)
+    if hearing_id > 999999:
+        return {
+            "error": (
+                f"hearing_id {hearing_id} looks like a regjeringen.no consultation ID, "
+                "not a Stortinget hearing ID. Stortinget hearing IDs are small numbers (4-6 digits). "
+            ),
+            "hearing_id": hearing_id,
+            "how_to_fix": (
+                "Option A (recommended): Use find_stortinget_hearings(topic='your topic') — "
+                "it searches by topic and fetches submissions in one call. "
+                "Option B: Use get_stortinget_horinger() to browse hearings and find valid IDs. "
+                "Option C: If you want ministry consultation responses (regjeringen.no), "
+                "use get_all_horingssvar with the regjeringen.no URL instead."
+            ),
+        }
+
     async with httpx.AsyncClient() as client:
         r = await client.get(
             f"{STORTINGET_API}/horingsinnspill",
@@ -1684,4 +1724,158 @@ async def get_parliamentary_questions(
         "total_found": total,
         "returned": len(all_questions),
         "session": sesjon,
+    }
+
+
+async def find_stortinget_hearings(
+    topic: str,
+    sesjon: str = CURRENT_SESJON,
+    include_submissions: bool = True,
+    max_hearings: int = 5,
+    max_submissions: int = 30,
+) -> dict:
+    """
+    Find Stortinget committee hearings by topic and retrieve their submissions
+    in a single call. No hearing IDs needed.
+
+    This is the recommended starting point for any Stortinget hearing query.
+    It combines the search + submission fetching that would otherwise require
+    knowing hearing IDs and making multiple separate calls.
+
+    NOTE: These are parliamentary COMMITTEE hearings (after a bill reaches
+    Stortinget). They are NOT the same as ministry consultation rounds on
+    regjeringen.no. For ministry consultations, use search_horinger +
+    get_all_horingssvar instead.
+
+    Args:
+        topic: Natural language topic in Norwegian or English, e.g. "helse",
+               "klima", "kommunelov", "pensjon", "immigration", "skatt".
+               Matched against committee names and linked case titles.
+        sesjon: Parliamentary session, e.g. "2024-2025", "2023-2024".
+               Default: current session.
+        include_submissions: Fetch written submissions for each hearing.
+               Default True. Set False to get just hearing metadata quickly.
+        max_hearings: Max hearings to return. Default 5.
+        max_submissions: Max submissions per hearing. Default 30.
+
+    Returns:
+        dict with "hearings" list. Each hearing contains:
+        - id, committee, type (skriftlig/muntlig), status, start_date, deadline
+        - linked_cases: list of related parliamentary cases with sak_id and title
+        - submissions (if include_submissions=True): list of:
+            organization, title, date, text, id
+        - submissions_total: total count before max_submissions cap
+    """
+    # Step 1: fetch all hearings for the session
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{STORTINGET_API}/horinger",
+                params={"sesjonid": sesjon, "format": "json"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            all_hearings = r.json().get("horinger_liste", [])
+        except Exception as e:
+            return {"error": f"Could not fetch hearings: {e}", "topic": topic, "sesjon": sesjon}
+
+    # Step 2: match hearings against topic keywords
+    query_words = [w.lower() for w in topic.split() if len(w) > 1]
+    matched = []
+    for h in all_hearings:
+        komite_info = h.get("komite", {})
+        komite_navn = komite_info.get("navn", "") if isinstance(komite_info, dict) else ""
+
+        linked_saker = h.get("horing_sak_info_liste", [])
+        linked_text = " ".join(
+            (s.get("sak_tittel", "") + " " + s.get("sak_korttittel", ""))
+            for s in linked_saker
+        )
+        searchable = (komite_navn + " " + linked_text).lower()
+
+        if any(w in searchable for w in query_words):
+            matched.append(h)
+        if len(matched) >= max_hearings:
+            break
+
+    if not matched:
+        return {
+            "topic": topic,
+            "sesjon": sesjon,
+            "hearings": [],
+            "total": 0,
+            "message": (
+                f"No committee hearings found for '{topic}' in session {sesjon}. "
+                f"Try a broader keyword or a different session (e.g. '2023-2024'). "
+                f"Total hearings in this session: {len(all_hearings)}."
+            ),
+        }
+
+    # Step 3: optionally fetch submissions for each matched hearing
+    results = []
+    async with httpx.AsyncClient() as client:
+        for h in matched:
+            hearing_id = h.get("id")
+            komite_info = h.get("komite", {})
+            komite_navn = komite_info.get("navn", "") if isinstance(komite_info, dict) else ""
+            linked_saker = h.get("horing_sak_info_liste", [])
+
+            entry = {
+                "id": hearing_id,
+                "committee": komite_navn,
+                "type": "skriftlig" if h.get("skriftlig") else "muntlig",
+                "status": h.get("horing_status"),
+                "start_date": _parse_stortinget_date(h.get("start_dato", "")),
+                "deadline": _parse_stortinget_date(h.get("innspillsfrist", "")),
+                "linked_cases": [
+                    {
+                        "sak_id": s.get("sak_id"),
+                        "title": s.get("sak_korttittel") or s.get("sak_tittel", ""),
+                    }
+                    for s in linked_saker
+                ],
+            }
+
+            if include_submissions and hearing_id:
+                try:
+                    r = await client.get(
+                        f"{STORTINGET_API}/horingsinnspill",
+                        params={"horingid": hearing_id, "format": "json"},
+                        timeout=20,
+                    )
+                    if r.status_code == 200:
+                        raw = r.json().get("horingsinnspill_liste", [])
+                        capped = raw[:max_submissions] if max_submissions else raw
+                        entry["submissions"] = [
+                            {
+                                "id": item.get("id"),
+                                "organization": item.get("organisasjon", ""),
+                                "title": item.get("tittel", ""),
+                                "date": _parse_stortinget_date(item.get("dato", "")),
+                                "text": item.get("tekst", ""),
+                            }
+                            for item in capped
+                        ]
+                        entry["submissions_total"] = len(raw)
+                        entry["submissions_returned"] = len(entry["submissions"])
+                    else:
+                        entry["submissions"] = []
+                        entry["submissions_error"] = f"HTTP {r.status_code}"
+                except Exception as e:
+                    entry["submissions"] = []
+                    entry["submissions_error"] = str(e)
+
+                await asyncio.sleep(0.3)
+
+            results.append(entry)
+
+    return {
+        "topic": topic,
+        "sesjon": sesjon,
+        "hearings": results,
+        "total": len(results),
+        "note": (
+            "These are Stortinget committee hearings. "
+            "For ministry consultation responses, use search_horinger + get_all_horingssvar."
+        ),
     }
